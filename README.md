@@ -14,6 +14,16 @@ management in the browser.
 This is a React project created using `create-react-app` that is bundled via Webpack.
 Install it by extracting the contents of this package and using;
 
+Create a `.env` file at the root level, specify the following env variables and replace the values:
+
+```
+REACT_APP_FLOWISE_API_KEY=<your-api-key>
+REACT_APP_FLOWISE_BASE_URL=http://localhost:3000
+REACT_APP_FLOWISE_CHATFLOW_ID=<chatflowid>
+```
+
+Install the app:
+
 ```shell
 $ npm i
 ```

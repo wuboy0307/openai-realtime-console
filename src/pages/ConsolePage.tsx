@@ -1,28 +1,34 @@
 /**
- * Running a local relay server will allow you to hide your API key
- * and run custom logic on the server
- *
- * Set the local relay server address to:
- * REACT_APP_LOCAL_RELAY_SERVER_URL=http://localhost:8081
- *
- * This will also require you to set OPENAI_API_KEY= in a `.env` file
+ * Change this if you want to connect to a local relay server!
+ * This will require you to set OPENAI_API_KEY= in a `.env` file
  * You can run it with `npm run relay`, in parallel with `npm start`
+ *
+ * Simply switch the lines by commenting one and removing the other
  */
-const LOCAL_RELAY_SERVER_URL: string =
-  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
+// const USE_LOCAL_RELAY_SERVER_URL: string | undefined = 'http://localhost:8081';
+const USE_LOCAL_RELAY_SERVER_URL: string | undefined = void 0;
+
+// Flowise Base URL
+const FLOWISE_BASE_URL = process.env.REACT_APP_FLOWISE_BASE_URL;
+// Flowise API Key
+const FLOWISE_API_KEY = process.env.REACT_APP_FLOWISE_API_KEY;
+// Flowise Chatflow ID
+const FLOWISE_CHATFLOW_ID = process.env.REACT_APP_FLOWISE_CHATFLOW_ID;
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 
+import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { okaidia } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { RealtimeClient } from '@openai/realtime-api-beta';
 import { ItemType } from '@openai/realtime-api-beta/dist/lib/client.js';
 import { WavRecorder, WavStreamPlayer } from '../lib/wavtools/index.js';
 import { instructions } from '../utils/conversation_config.js';
 import { WavRenderer } from '../utils/wav_renderer';
 
-import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
+import { X, Edit, Zap, ArrowUp, ArrowDown, Book, Search, Code } from 'react-feather';
 import { Button } from '../components/button/Button';
 import { Toggle } from '../components/toggle/Toggle';
-import { Map } from '../components/Map';
 
 import './ConsolePage.scss';
 import { isJsxOpeningLikeElement } from 'typescript';
@@ -44,6 +50,24 @@ interface Coordinates {
   };
 }
 
+interface ToolMessage {
+  type: string
+  content: string
+  artifacts?: any
+  sources?: any
+}
+
+interface Tool {
+  name: string;
+  description: string;
+  parameters?: {
+    type: string,
+    properties: Record<string, any>,
+    required: string[]
+  },
+  messages?: ToolMessage[]
+}
+
 /**
  * Type for all event logs
  */
@@ -59,7 +83,7 @@ export function ConsolePage() {
    * Ask user for API Key
    * If we're using the local relay server, we don't need this
    */
-  const apiKey = LOCAL_RELAY_SERVER_URL
+  const apiKey = USE_LOCAL_RELAY_SERVER_URL
     ? ''
     : localStorage.getItem('tmp::voice_api_key') ||
       prompt('OpenAI API Key') ||
@@ -82,8 +106,8 @@ export function ConsolePage() {
   );
   const clientRef = useRef<RealtimeClient>(
     new RealtimeClient(
-      LOCAL_RELAY_SERVER_URL
-        ? { url: LOCAL_RELAY_SERVER_URL }
+      USE_LOCAL_RELAY_SERVER_URL
+        ? { url: USE_LOCAL_RELAY_SERVER_URL }
         : {
             apiKey: apiKey,
             dangerouslyAllowAPIKeyInBrowser: true,
@@ -91,6 +115,7 @@ export function ConsolePage() {
     )
   );
 
+  const sessionID = 'example-session';
   /**
    * References for
    * - Rendering audio visualization (canvas)
@@ -125,6 +150,8 @@ export function ConsolePage() {
   });
   const [marker, setMarker] = useState<Coordinates | null>(null);
 
+  const [tools, setTools] = useState<Tool[]>([]);
+  const [activeTab, setActiveTab] = useState(0); // To track the active tab
   /**
    * Utility for formatting the timing of logs
    */
@@ -381,79 +408,60 @@ export function ConsolePage() {
     // Set transcription, otherwise we don't get user transcriptions back
     client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
 
-    // Add tools
-    client.addTool(
-      {
-        name: 'set_memory',
-        description: 'Saves important data about the user into memory.',
-        parameters: {
-          type: 'object',
-          properties: {
-            key: {
-              type: 'string',
-              description:
-                'The key of the memory value. Always use lowercase and underscores, no other characters.',
-            },
-            value: {
-              type: 'string',
-              description: 'Value can be anything represented as a string',
-            },
-          },
-          required: ['key', 'value'],
-        },
-      },
-      async ({ key, value }: { [key: string]: any }) => {
-        setMemoryKv((memoryKv) => {
-          const newKv = { ...memoryKv };
-          newKv[key] = value;
-          return newKv;
-        });
-        return { ok: true };
-      }
-    );
-    client.addTool(
-      {
-        name: 'get_weather',
-        description:
-          'Retrieves the weather for a given lat, lng coordinate pair. Specify a label for the location.',
-        parameters: {
-          type: 'object',
-          properties: {
-            lat: {
-              type: 'number',
-              description: 'Latitude',
-            },
-            lng: {
-              type: 'number',
-              description: 'Longitude',
-            },
-            location: {
-              type: 'string',
-              description: 'Name of the location',
-            },
-          },
-          required: ['lat', 'lng', 'location'],
-        },
-      },
-      async ({ lat, lng, location }: { [key: string]: any }) => {
-        setMarker({ lat, lng, location });
-        setCoords({ lat, lng, location });
-        const result = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,wind_speed_10m`
-        );
-        const json = await result.json();
-        const temperature = {
-          value: json.current.temperature_2m as number,
-          units: json.current_units.temperature_2m as string,
+    // execute fetch request to get the tools
+    const fetchTools = async () => {
+      const response = await fetch(`${FLOWISE_BASE_URL}/api/v1/openai-realtime/${FLOWISE_CHATFLOW_ID}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + FLOWISE_API_KEY
+        }
+      });
+      const tools = await response.json();
+      if (tools) {
+        setTools(tools);
+        for (const tool of tools) {
+          if (Object.hasOwnProperty.call(client.tools, tool.name)) continue
+          client.addTool(tool,
+            async (args: any) => {
+              const response = await fetch(`${FLOWISE_BASE_URL}/api/v1/openai-realtime/${FLOWISE_CHATFLOW_ID}`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + FLOWISE_API_KEY
+                },
+                body: JSON.stringify({
+                  chatId: sessionID,
+                  toolName: tool.name,
+                  inputArgs: args,
+                }),
+              });
+              const result = await response.json();
+              const toolOutput = result.output;
+              const sources = result.sourceDocuments;
+              const artifacts = result.artifacts;
+
+              setTools((tools) => {
+                const newTools = [...tools];
+                const toolIndex = newTools.findIndex((t) => t.name === tool.name);
+                if (toolIndex >= 0) {
+                  const newTool = { ...newTools[toolIndex] };
+                  newTool.messages = newTool.messages || [];
+                  newTool.messages.push({ type: 'input', content: JSON.stringify(args) });
+                  newTool.messages.push({ type: 'output', content: toolOutput, sources, artifacts });
+                  newTools[toolIndex] = newTool;
+                }
+                return newTools;
+              });
+
+              return toolOutput;
+            }
+          );
         };
-        const wind_speed = {
-          value: json.current.wind_speed_10m as number,
-          units: json.current_units.wind_speed_10m as string,
-        };
-        setMarker({ lat, lng, location, temperature, wind_speed });
-        return json;
       }
-    );
+    };
+
+    fetchTools();
 
     // handle realtime events from client + server for event logging
     client.on('realtime.event', (realtimeEvent: RealtimeEvent) => {
@@ -500,6 +508,92 @@ export function ConsolePage() {
     };
   }, []);
 
+  const renderToolContent = (toolMessageContent: any, sources?: any, artifacts?: any) => {
+    let sourcesHTML = (<></>);
+    if (sources && sources.length) {
+      sourcesHTML = (
+        <div>
+          <div>sources:</div>
+          {sources.map((source: any, i: number) => {
+            return (
+              <div key={i}>
+                <Button
+                  buttonStyle="flush"
+                  label={`${source.pageContent.slice(0, 20)}...`}
+                  onClick={() => alert(source.pageContent)}
+                />
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+    let artifactsHTML = (<></>);
+    if (artifacts && artifacts.length) {
+      const imgArtifacts = [];
+      for (let i = 0; i < artifacts.length; i++) {
+        const artifact = artifacts[i];
+        if (artifact.type === 'png' || artifact.type === 'jpeg') {
+          imgArtifacts.push({
+            type: artifact.type,
+            data: `${FLOWISE_BASE_URL}/api/v1/get-upload-file?chatflowId=${FLOWISE_CHATFLOW_ID}&chatId=${sessionID}&fileName=${artifact.data.replace(
+                'FILE-STORAGE::',
+                ''
+            )}`
+          })
+        }
+      }
+      artifactsHTML = (
+        <div>
+          {imgArtifacts.map((artifact: any, i: number) => {
+            return (
+              <div key={i} className="img-container">
+                <img className="image" src={artifact.data} />
+              </div>
+            )
+          })}
+        </div>
+      )
+    }
+
+    return (
+      <>
+        {artifactsHTML}
+        <ReactMarkdown
+          components={{
+            code({ node, inline, className, children, ...props }: any) {
+              const match = /language-(\w+)/.exec(className || '');
+    
+              return !inline && match ? (
+                <SyntaxHighlighter style={okaidia} PreTag="div" language={match[1]} {...props}>
+                  {String(children).replace(/\n$/, '')}
+                </SyntaxHighlighter>
+              ) : (
+                <code className={className} {...props}>
+                  {children}
+                </code>
+              );
+            },
+          }}
+        >
+          {toolMessageContent}
+        </ReactMarkdown>
+        {sourcesHTML}
+      </>
+    )
+  }
+
+  const renderIcon = (tabName: string) => {
+    switch (tabName) {
+      case 'realtime_api':
+        return Book;
+      case 'code_interpreter':
+        return Code;
+      default:
+        return Search;
+    }
+  }
+
   /**
    * Render the application
    */
@@ -511,7 +605,7 @@ export function ConsolePage() {
           <span>realtime console</span>
         </div>
         <div className="content-api-key">
-          {!LOCAL_RELAY_SERVER_URL && (
+          {!USE_LOCAL_RELAY_SERVER_URL && (
             <Button
               icon={Edit}
               iconPosition="end"
@@ -692,36 +786,34 @@ export function ConsolePage() {
           </div>
         </div>
         <div className="content-right">
-          <div className="content-block map">
-            <div className="content-block-title">get_weather()</div>
-            <div className="content-block-title bottom">
-              {marker?.location || 'not yet retrieved'}
-              {!!marker?.temperature && (
-                <>
-                  <br />
-                  🌡️ {marker.temperature.value} {marker.temperature.units}
-                </>
-              )}
-              {!!marker?.wind_speed && (
-                <>
-                  {' '}
-                  🍃 {marker.wind_speed.value} {marker.wind_speed.units}
-                </>
-              )}
-            </div>
-            <div className="content-block-body full">
-              {coords && (
-                <Map
-                  center={[coords.lat, coords.lng]}
-                  location={coords.location}
-                />
-              )}
-            </div>
+          <div className="tab-header">
+            {tools.map((tab, index) => (
+              <Button
+                key={index}
+                label={tab.name}
+                iconPosition={'start'}
+                icon={renderIcon(tab.name)}
+                buttonStyle={activeTab === index ? 'action' : 'regular'}
+                onClick={() => setActiveTab(index)}
+              />
+            ))}
           </div>
           <div className="content-block kv">
-            <div className="content-block-title">set_memory()</div>
             <div className="content-block-body content-kv">
-              {JSON.stringify(memoryKv, null, 2)}
+              {tools && tools.length && (tools[activeTab].messages ?? []).map((toolMessageItem, i) => {
+                return (
+                  <div className="conversation-item" key={i}>
+                    <div className={`speaker ${toolMessageItem.type === 'input' ? 'user' : 'assistant'}`}>
+                      <div>
+                        {toolMessageItem.type}
+                      </div>
+                    </div>
+                    <div className={`speaker-content`}>  
+                      {renderToolContent(toolMessageItem.content, toolMessageItem.sources, toolMessageItem.artifacts)}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
